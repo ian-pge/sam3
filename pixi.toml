@@ -1,0 +1,42 @@
+[workspace]
+name = "sam3"
+version = "0.1.0"
+description = "SAM3 (Segment Anything Model 3) implementation"
+channels = ["conda-forge", "pytorch"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.10.*"
+timm = ">=1.0.17"
+numpy = ">=1.26,<2"
+tqdm = "*"
+ftfy = "==6.1.1"
+regex = "*"
+iopath = ">=0.1.10"
+typing_extensions = "*"
+huggingface_hub = "*"
+pytorch = "*"
+torchvision = "*"
+pytest = "*"
+jupyter = "*"
+matplotlib = "*"
+opencv = "*"
+scikit-image = "*"
+scikit-learn = "*"
+einops = "*"
+triton = "*"
+fairscale = "*"
+fvcore = "*"
+hydra-core = "*"
+omegaconf = "*"
+pandas = "*"
+psutil = "*"
+pycocotools = "*"
+submitit = "*"
+torchmetrics = "*"
+
+[system-requirements]
+linux = "5.10"
+
+[pypi-dependencies]
+decord = "*"
