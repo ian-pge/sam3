@@ -70,6 +70,7 @@ def main():
             if masks is None or len(masks) == 0:
                 print(f"  No {args.prompt} detected.")
                 continue
+<<<<<<< HEAD
             
             if hasattr(masks, 'shape'):
                  print(f"  Raw masks shape: {masks.shape}")
@@ -91,6 +92,29 @@ def main():
             elif masks.ndim == 4: # [B, N, H, W]
                 final_mask = masks.any(dim=1).squeeze(0)
             else:
+=======
+
+            # Combine all masks for the prompt (logical OR) if multiple instances found
+            if isinstance(masks, list):
+                masks = torch.stack(masks)
+            
+            # We want to select the single mask with the largest area (most pixels)
+            # First, reshape to [-1, H, W] to handle arbitrary batch/channel dims
+            if masks.ndim >= 2:
+                H, W = masks.shape[-2:]
+                candidates = masks.reshape(-1, H, W) # Flatten all leading dims
+                
+                # Calculate area for each candidate mask
+                # Assuming masks are boolean or 0/1 (if logits, we might need threshold, but usually they are masks)
+                # Ensure float for summation if bool
+                areas = candidates.float().sum(dim=(1, 2))
+                
+                # Find index of largest mask
+                best_idx = torch.argmax(areas)
+                final_mask = candidates[best_idx]
+            else:
+                # Should not happen if shapes are correct, but fallback
+>>>>>>> 6622636 (update)
                 final_mask = masks
 
             # Convert to numpy uint8
@@ -98,13 +122,20 @@ def main():
                 final_mask = final_mask.cpu().numpy()
             
             final_mask_uint8 = (final_mask * 255).astype(np.uint8)
+<<<<<<< HEAD
             print(f"  Final mask shape: {final_mask_uint8.shape}")
+=======
+>>>>>>> 6622636 (update)
             
             # Save
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
+<<<<<<< HEAD
             print(f"  Saved mask to {save_path}")
+=======
+            print(f"  Saved mask to {save_path} (largest detected area)")
+>>>>>>> 6622636 (update)
 
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
