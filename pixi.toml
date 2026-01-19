@@ -2,12 +2,16 @@
 name = "sam3"
 version = "0.1.0"
 description = "SAM3 (Segment Anything Model 3) implementation"
-channels = ["conda-forge", "pytorch"]
+channels = ["conda-forge", "nvidia"]
 platforms = ["linux-64"]
+
+[tasks]
+mask-cars = "python scripts/mask_dataset.py"
 
 [dependencies]
 python = "3.10.*"
-timm = ">=1.0.17"
+pip = "*"
+pytorch-gpu = ">=2.5"
 numpy = ">=1.26,<2"
 tqdm = "*"
 ftfy = "==6.1.1"
@@ -15,17 +19,13 @@ regex = "*"
 iopath = ">=0.1.10"
 typing_extensions = "*"
 huggingface_hub = "*"
-pytorch = "*"
-torchvision = "*"
 pytest = "*"
 jupyter = "*"
 matplotlib = "*"
-opencv = "*"
 scikit-image = "*"
 scikit-learn = "*"
 einops = "*"
 triton = "*"
-fairscale = "*"
 fvcore = "*"
 hydra-core = "*"
 omegaconf = "*"
@@ -35,8 +35,14 @@ pycocotools = "*"
 submitit = "*"
 torchmetrics = "*"
 
+torchvision = "*"
 [system-requirements]
 linux = "5.10"
+cuda = "12.4"
 
 [pypi-dependencies]
 decord = "*"
+fairscale = "*"
+timm = ">=1.0.17"
+sympy = "*"
+sam3 = { path = ".", editable = true }
