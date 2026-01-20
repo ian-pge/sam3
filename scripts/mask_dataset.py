@@ -12,6 +12,7 @@ def main():
     parser.add_argument("dataset_path", type=str, help="Path to the dataset directory containing images")
     parser.add_argument("--output_dir", type=str, default="masks", help="Subdirectory name for saving masks")
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
+    parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path
@@ -28,7 +29,7 @@ def main():
     # If running on CPU-only machine, this might fail or need explicit mapping if supported by library.
     try:
         model = build_sam3_image_model()
-        processor = Sam3Processor(model)
+        processor = Sam3Processor(model, confidence_threshold=args.threshold)
     except Exception as e:
         print(f"Error loading model: {e}")
         print("Ensure you have a CUDA-compatible GPU and PyTorch compiled with CUDA support.")
@@ -68,7 +69,7 @@ def main():
             masks = output["masks"]
             
             if masks is None or len(masks) == 0:
-                print(f"  No {args.prompt} detected.")
+                print(f"  WARING: No {args.prompt} detected in {filename}. Skipping.")
                 continue
 
             # Combine all masks for the prompt (logical OR) if multiple instances found
@@ -97,13 +98,28 @@ def main():
             if isinstance(final_mask, torch.Tensor):
                 final_mask = final_mask.cpu().numpy()
             
+            # Post-processing: Make sure we only have the largest connected component
+            # This removes small disjoint artifacts (like reflections in windows)
+            from skimage import measure
+            
+            # Ensure boolean
+            binary_mask = final_mask > 0
+            
+            # Label connected components
+            labels = measure.label(binary_mask)
+            
+            if labels.max() > 0:
+                # Find largest component
+                largest_component_label = np.argmax(np.bincount(labels.flat)[1:]) + 1
+                final_mask = (labels == largest_component_label)
+            
             final_mask_uint8 = (final_mask * 255).astype(np.uint8)
             
             # Save
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
-            print(f"  Saved mask to {save_path} (largest detected area)")
+            print(f"  Saved mask to {save_path} (largest component of largest detection)")
 
         except Exception as e:
             print(f"  Error processing {filename}: {e}")

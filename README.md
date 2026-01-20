@@ -33,6 +33,7 @@ pixi run mask-cars <dataset_path> [options]
 - `dataset_path`: Path to the directory containing images (Required).
 - `--output_dir`: Subdirectory to save masks (Default: `masks`).
 - `--prompt`: Text prompt for segmentation (Default: `"car"`).
+- `--threshold`: Confidence threshold for detection (Default: `0.15`). Lower this if cars are missed.
 
 ### Example
 ```bash
