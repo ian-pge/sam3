@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="masks", help="Subdirectory name for saving masks")
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
+    parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path
@@ -31,7 +32,7 @@ def main():
         model = build_sam3_image_model()
         
         # Optimization: Use half-precision to save VRAM
-        if torch.cuda.is_available():
+        if args.fp16 and torch.cuda.is_available():
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             print(f"  Moving model to {dtype} for VRAM optimization...")
             model = model.to(dtype=dtype)
