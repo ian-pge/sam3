@@ -6,7 +6,7 @@ channels = ["conda-forge", "nvidia"]
 platforms = ["linux-64"]
 
 [tasks]
-mask-cars = "python scripts/mask_dataset.py"
+mask-cars = { cmd = "python scripts/mask_dataset.py", env = { PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True" } }
 
 [dependencies]
 python = "3.10.*"

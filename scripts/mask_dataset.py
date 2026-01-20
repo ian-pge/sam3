@@ -16,8 +16,7 @@ def main():
     parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
     args = parser.parse_args()
 
-    # Set allocator config to reduce fragmentation
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
     dataset_path = args.dataset_path
     if not os.path.exists(dataset_path):
