@@ -14,7 +14,11 @@ def main():
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
+    parser.add_argument("--resolution", type=int, default=1008, help="Resize images to this resolution (default: 1008)")
     args = parser.parse_args()
+
+    # Set allocator config to reduce fragmentation
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     dataset_path = args.dataset_path
     if not os.path.exists(dataset_path):
@@ -37,7 +41,7 @@ def main():
             print(f"  Moving model to {dtype} for VRAM optimization...")
             model = model.to(dtype=dtype)
         
-        processor = Sam3Processor(model, confidence_threshold=args.threshold)
+        processor = Sam3Processor(model, confidence_threshold=args.threshold, resolution=args.resolution)
     except Exception as e:
         print(f"Error loading model: {e}")
         print("Ensure you have a CUDA-compatible GPU and PyTorch compiled with CUDA support.")
@@ -60,10 +64,19 @@ def main():
         return
 
     print(f"Found {len(image_files)} images. Starting processing...")
+    
+    import gc
 
     for idx, img_path in enumerate(image_files):
         filename = os.path.basename(img_path)
         print(f"Processing {idx+1}/{len(image_files)}: {filename}")
+        
+        # Variables to clean up
+        image = None
+        inference_state = None
+        output = None
+        masks = None
+        final_mask = None
         
         try:
             image = Image.open(img_path).convert("RGB")
@@ -78,9 +91,6 @@ def main():
             
             if masks is None or len(masks) == 0:
                 print(f"  WARING: No {args.prompt} detected in {filename}. Skipping.")
-                # Clear VRAM even on skip
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
                 continue
 
             # Combine all masks for the prompt (logical OR) if multiple instances found
@@ -120,7 +130,9 @@ def main():
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
         
-        # Clear VRAM after processing each image
+        # Aggressive memory cleanup
+        del image, inference_state, output, masks, final_mask
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
