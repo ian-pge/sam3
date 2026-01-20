@@ -109,28 +109,13 @@ def main():
             if isinstance(final_mask, torch.Tensor):
                 final_mask = final_mask.cpu().numpy()
             
-            # Post-processing: Make sure we only have the largest connected component
-            # This removes small disjoint artifacts (like reflections in windows)
-            from skimage import measure
-            
-            # Ensure boolean
-            binary_mask = final_mask > 0
-            
-            # Label connected components
-            labels = measure.label(binary_mask)
-            
-            if labels.max() > 0:
-                # Find largest component
-                largest_component_label = np.argmax(np.bincount(labels.flat)[1:]) + 1
-                final_mask = (labels == largest_component_label)
-            
             final_mask_uint8 = (final_mask * 255).astype(np.uint8)
             
             # Save
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
-            print(f"  Saved mask to {save_path} (largest component of largest detection)")
+            print(f"  Saved mask to {save_path} (largest detected area)")
 
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
