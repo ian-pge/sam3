@@ -29,6 +29,13 @@ def main():
     # If running on CPU-only machine, this might fail or need explicit mapping if supported by library.
     try:
         model = build_sam3_image_model()
+        
+        # Optimization: Use half-precision to save VRAM
+        if torch.cuda.is_available():
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            print(f"  Moving model to {dtype} for VRAM optimization...")
+            model = model.to(dtype=dtype)
+        
         processor = Sam3Processor(model, confidence_threshold=args.threshold)
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -70,6 +77,9 @@ def main():
             
             if masks is None or len(masks) == 0:
                 print(f"  WARING: No {args.prompt} detected in {filename}. Skipping.")
+                # Clear VRAM even on skip
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 continue
 
             # Combine all masks for the prompt (logical OR) if multiple instances found
@@ -123,6 +133,10 @@ def main():
 
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
+        
+        # Clear VRAM after processing each image
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print("Processing complete.")
 
