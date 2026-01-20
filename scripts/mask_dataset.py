@@ -14,7 +14,6 @@ def main():
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
-    parser.add_argument("--resolution", type=int, default=1008, help="Resize images to this resolution (default: 1008)")
     args = parser.parse_args()
 
     # Set allocator config to reduce fragmentation
@@ -41,7 +40,7 @@ def main():
             print(f"  Moving model to {dtype} for VRAM optimization...")
             model = model.to(dtype=dtype)
         
-        processor = Sam3Processor(model, confidence_threshold=args.threshold, resolution=args.resolution)
+        processor = Sam3Processor(model, confidence_threshold=args.threshold)
     except Exception as e:
         print(f"Error loading model: {e}")
         print("Ensure you have a CUDA-compatible GPU and PyTorch compiled with CUDA support.")
@@ -64,19 +63,10 @@ def main():
         return
 
     print(f"Found {len(image_files)} images. Starting processing...")
-    
-    import gc
 
     for idx, img_path in enumerate(image_files):
         filename = os.path.basename(img_path)
         print(f"Processing {idx+1}/{len(image_files)}: {filename}")
-        
-        # Variables to clean up
-        image = None
-        inference_state = None
-        output = None
-        masks = None
-        final_mask = None
         
         try:
             image = Image.open(img_path).convert("RGB")
@@ -130,9 +120,7 @@ def main():
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
         
-        # Aggressive memory cleanup
-        del image, inference_state, output, masks, final_mask
-        gc.collect()
+        # Clear VRAM after processing each image
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 

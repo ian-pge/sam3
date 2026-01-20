@@ -35,7 +35,6 @@ pixi run mask-cars <dataset_path> [options]
 - `--prompt`: Text prompt for segmentation (Default: `"car"`).
 - `--threshold`: Confidence threshold for detection (Default: `0.15`). Lower this if cars are missed.
 - `--fp16`: Use half-precision (float16) to reduce VRAM usage (Optional).
-- `--resolution`: Resize images to this resolution (Default: `1008`). Lowering this (e.g., to `800`) significantly reduces VRAM usage.
 
 ### Example
 ```bash
