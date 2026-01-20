@@ -70,29 +70,6 @@ def main():
             if masks is None or len(masks) == 0:
                 print(f"  No {args.prompt} detected.")
                 continue
-<<<<<<< HEAD
-            
-            if hasattr(masks, 'shape'):
-                 print(f"  Raw masks shape: {masks.shape}")
-            elif isinstance(masks, list):
-                 print(f"  Raw masks is list of len {len(masks)}")
-                 if len(masks) > 0 and hasattr(masks[0], 'shape'):
-                     print(f"  Element 0: {masks[0].shape}")
-
-            # Combine all masks for the prompt (logical OR) if multiple instances found
-            # Assuming masks are boolean or 0/1 tensors
-            if isinstance(masks, list):
-                 # If list of tensors, stack them
-                masks = torch.stack(masks)
-            
-            # masks is likely a torch tensor [N, H, W]
-            # Collapse to single channel [H, W]
-            if masks.ndim == 3:
-                final_mask = masks.any(dim=0)
-            elif masks.ndim == 4: # [B, N, H, W]
-                final_mask = masks.any(dim=1).squeeze(0)
-            else:
-=======
 
             # Combine all masks for the prompt (logical OR) if multiple instances found
             if isinstance(masks, list):
@@ -114,7 +91,6 @@ def main():
                 final_mask = candidates[best_idx]
             else:
                 # Should not happen if shapes are correct, but fallback
->>>>>>> 6622636 (update)
                 final_mask = masks
 
             # Convert to numpy uint8
@@ -122,20 +98,12 @@ def main():
                 final_mask = final_mask.cpu().numpy()
             
             final_mask_uint8 = (final_mask * 255).astype(np.uint8)
-<<<<<<< HEAD
-            print(f"  Final mask shape: {final_mask_uint8.shape}")
-=======
->>>>>>> 6622636 (update)
             
             # Save
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
-<<<<<<< HEAD
-            print(f"  Saved mask to {save_path}")
-=======
             print(f"  Saved mask to {save_path} (largest detected area)")
->>>>>>> 6622636 (update)
 
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
