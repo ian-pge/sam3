@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
+    parser.add_argument("--viz", action="store_true", help="Enable visualization of masks on images")
     args = parser.parse_args()
 
     print("\n🚀 Starting SAM3 Masking Pipeline")
@@ -29,11 +30,17 @@ def main():
     # Create output directory
     output_path = os.path.join(dataset_path, args.output_dir)
     os.makedirs(output_path, exist_ok=True)
+    
+    # Create visualization directory
+    viz_path = os.path.join(output_path, "viz")
+    if args.viz:
+        os.makedirs(viz_path, exist_ok=True)
 
     # Recap
     print("📋 Configuration Recap:")
     print(f"  ├── 📂 Dataset Path: {dataset_path}")
     print(f"  ├── 📂 Output Dir:   {output_path}")
+    print(f"  ├── 👁️  Visualization: {'Enabled ✅' if args.viz else 'Disabled ❌'}")
     print(f"  ├── 📝 Prompt:       '{args.prompt}'")
     print(f"  ├── 🎚️  Threshold:    {args.threshold}")
     print(f"  └── 💾 FP16 Mode:    {'Enabled ✅' if args.fp16 else 'Disabled ❌'}")
@@ -128,11 +135,42 @@ def main():
             mask_area = np.sum(final_mask_uint8 > 0)
             stats["total_area_pixels"] += mask_area
             
-            # Save
+            # Save Mask
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
             
+            # Save Visualization
+            if args.viz:
+                try:
+                    # 1. Apply mask to image (alpha channel)
+                    # Create RGBA image
+                    viz_img = image.convert("RGBA")
+                    # Create mask image (L mode)
+                    mask_pil = Image.fromarray(final_mask_uint8, mode='L')
+                    
+                    # Apply mask as alpha channel
+                    # If the original image already has alpha, we might want to multiply?
+                    # But usually jpeg doesn't. Let's just set the alpha to the mask.
+                    r, g, b, a = viz_img.split()
+                    viz_img = Image.merge("RGBA", (r, g, b, mask_pil))
+                    
+                    # 2. Crop to bounding box
+                    # Get bbox from mask
+                    bbox = mask_pil.getbbox()
+                    
+                    if bbox:
+                        viz_crop = viz_img.crop(bbox)
+                        
+                        viz_name = os.path.splitext(filename)[0] + "_cutout.png"
+                        viz_out_path = os.path.join(viz_path, viz_name)
+                        viz_crop.save(viz_out_path)
+                    else:
+                        pbar.write(f"  ⚠️  Empty bbox for {filename}, skipping viz.")
+
+                except Exception as viz_e:
+                     pbar.write(f"  ⚠️  Viz Error: {viz_e}")
+
             stats["processed"] += 1
 
         except Exception as e:
@@ -159,6 +197,8 @@ def main():
     print(f"❌ Errors:              {stats['errors']}")
     print("-" * 30)
     print(f"💾 Output Directory:    {output_path}")
+    if args.viz:
+        print(f"👁️  Viz Directory:       {viz_path}")
     print("=" * 50)
     print("🏁 Done!")
 

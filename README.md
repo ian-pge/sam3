@@ -35,6 +35,12 @@ pixi run mask-cars <dataset_path> [options]
 - `--prompt`: Text prompt for segmentation (Default: `"car"`).
 - `--threshold`: Confidence threshold for detection (Default: `0.15`). Lower this if cars are missed.
 - `--fp16`: Use half-precision (float16) to reduce VRAM usage (Optional).
+- `--viz`: Enable visualization of crops (cutouts) on real images (Optional). Saved in `viz` folder.
+
+### Features
+- **Progress Bar**: Real-time tracking of processing speed and estimated completion.
+- **Visualizations**: Optional (`--viz`). Saves `_cutout.png` showing the isolated object cropped from the original image.
+- **Analytics**: Displays a summary of total masks, skipped images, and errors after processing.
 
 ### Example
 ```bash
