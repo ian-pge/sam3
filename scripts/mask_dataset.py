@@ -3,7 +3,9 @@ import argparse
 import glob
 import torch
 import numpy as np
+import time
 from PIL import Image
+from tqdm import tqdm
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
@@ -16,38 +18,46 @@ def main():
     parser.add_argument("--fp16", action="store_true", help="Use half-precision (fp16/bf16) to save VRAM")
     args = parser.parse_args()
 
-
-
+    print("\n🚀 Starting SAM3 Masking Pipeline")
+    print("=" * 50)
+    
     dataset_path = args.dataset_path
     if not os.path.exists(dataset_path):
-        print(f"Error: Dataset path '{dataset_path}' does not exist.")
+        print(f"❌ Error: Dataset path '{dataset_path}' does not exist.")
         return
 
     # Create output directory
     output_path = os.path.join(dataset_path, args.output_dir)
     os.makedirs(output_path, exist_ok=True)
 
-    print("Loading SAM3 model...")
-    # NOTE: SAM3 implementation might require CUDA. 
-    # If running on CPU-only machine, this might fail or need explicit mapping if supported by library.
+    # Recap
+    print("📋 Configuration Recap:")
+    print(f"  ├── 📂 Dataset Path: {dataset_path}")
+    print(f"  ├── 📂 Output Dir:   {output_path}")
+    print(f"  ├── 📝 Prompt:       '{args.prompt}'")
+    print(f"  ├── 🎚️  Threshold:    {args.threshold}")
+    print(f"  └── 💾 FP16 Mode:    {'Enabled ✅' if args.fp16 else 'Disabled ❌'}")
+    print("=" * 50)
+    print("\n📦 Loading SAM3 model...")
+
     try:
         model = build_sam3_image_model()
         
         # Optimization: Use half-precision to save VRAM
         if args.fp16 and torch.cuda.is_available():
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            print(f"  Moving model to {dtype} for VRAM optimization...")
+            print(f"  ⚡ Moving model to {dtype} for VRAM optimization...")
             model = model.to(dtype=dtype)
         
         processor = Sam3Processor(model, confidence_threshold=args.threshold)
+        print("  ✅ Model loaded successfully!")
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"❌ Error loading model: {e}")
         print("Ensure you have a CUDA-compatible GPU and PyTorch compiled with CUDA support.")
-        # Attempt to proceed if it's just a warning, but likely it will fail later if model is None
-        # returning here to avoid cascade errors if model build failed
         return
 
     # Get images
+    print("\n🔍 Scanning for images...")
     image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
     image_files = []
     for ext in image_extensions:
@@ -58,14 +68,27 @@ def main():
     image_files = sorted(list(set(image_files)))
     
     if not image_files:
-        print(f"No images found in {dataset_path}")
+        print(f"❌ No images found in {dataset_path}")
         return
 
-    print(f"Found {len(image_files)} images. Starting processing...")
+    print(f"  ✅ Found {len(image_files)} images.")
+    print("\n▶️  Starting processing loop...")
 
-    for idx, img_path in enumerate(image_files):
+    # Statistics tracking
+    stats = {
+        "processed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "total_area_pixels": 0
+    }
+    
+    start_time = time.time()
+
+    # Progress bar
+    pbar = tqdm(image_files, desc="Processing 🚗", unit="img", ncols=100)
+    
+    for img_path in pbar:
         filename = os.path.basename(img_path)
-        print(f"Processing {idx+1}/{len(image_files)}: {filename}")
         
         try:
             image = Image.open(img_path).convert("RGB")
@@ -74,34 +97,25 @@ def main():
             inference_state = processor.set_image(image)
             output = processor.set_text_prompt(state=inference_state, prompt=args.prompt)
             
-            # Output contains masks, boxes, scores. 
-            # masks shape is presumably [N, H, W] or similar.
             masks = output["masks"]
             
             if masks is None or len(masks) == 0:
-                print(f"  WARING: No {args.prompt} detected in {filename}. Skipping.")
+                stats["skipped"] += 1
+                pbar.write(f"  ⚠️  No {args.prompt} detected in {filename}. Skipping.")
                 continue
 
             # Combine all masks for the prompt (logical OR) if multiple instances found
             if isinstance(masks, list):
                 masks = torch.stack(masks)
             
-            # We want to select the single mask with the largest area (most pixels)
-            # First, reshape to [-1, H, W] to handle arbitrary batch/channel dims
+            # Select largest mask
             if masks.ndim >= 2:
                 H, W = masks.shape[-2:]
-                candidates = masks.reshape(-1, H, W) # Flatten all leading dims
-                
-                # Calculate area for each candidate mask
-                # Assuming masks are boolean or 0/1 (if logits, we might need threshold, but usually they are masks)
-                # Ensure float for summation if bool
+                candidates = masks.reshape(-1, H, W) 
                 areas = candidates.float().sum(dim=(1, 2))
-                
-                # Find index of largest mask
                 best_idx = torch.argmax(areas)
                 final_mask = candidates[best_idx]
             else:
-                # Should not happen if shapes are correct, but fallback
                 final_mask = masks
 
             # Convert to numpy uint8
@@ -110,20 +124,43 @@ def main():
             
             final_mask_uint8 = (final_mask * 255).astype(np.uint8)
             
+            # Update stats
+            mask_area = np.sum(final_mask_uint8 > 0)
+            stats["total_area_pixels"] += mask_area
+            
             # Save
             save_name = os.path.splitext(filename)[0] + "_mask.png"
             save_path = os.path.join(output_path, save_name)
             Image.fromarray(final_mask_uint8).save(save_path)
-            print(f"  Saved mask to {save_path} (largest detected area)")
+            
+            stats["processed"] += 1
 
         except Exception as e:
-            print(f"  Error processing {filename}: {e}")
+            stats["errors"] += 1
+            pbar.write(f"  ❌ Error processing {filename}: {e}")
         
-        # Clear VRAM after processing each image
+        # Clear VRAM
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    print("Processing complete.")
+    end_time = time.time()
+    total_duration = end_time - start_time
+    avg_time = total_duration / len(image_files) if len(image_files) > 0 else 0
+
+    print("\n" + "=" * 50)
+    print("📊 Final Analytics")
+    print("=" * 50)
+    print(f"⏱️  Total Duration:      {total_duration:.2f} seconds")
+    print(f"⚡ Average Time/Image:  {avg_time:.2f} seconds")
+    print("-" * 30)
+    print(f"🔢 Total Images:        {len(image_files)}")
+    print(f"✅ Successfully Masked: {stats['processed']} ({stats['processed']/len(image_files)*100:.1f}%)")
+    print(f"⚠️  Skipped (No detection): {stats['skipped']}")
+    print(f"❌ Errors:              {stats['errors']}")
+    print("-" * 30)
+    print(f"💾 Output Directory:    {output_path}")
+    print("=" * 50)
+    print("🏁 Done!")
 
 if __name__ == "__main__":
     main()
