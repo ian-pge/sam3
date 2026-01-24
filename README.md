@@ -46,6 +46,7 @@ pixi run mask-cars <dataset_path> [options]
 - `--prompt`: Text prompt for segmentation (Default: `"car"`).
 - `--threshold`: Confidence threshold for detection (Default: `0.15`). Lower this if cars are missed.
 - `--viz`: Enable visualization of crops (cutouts) on real images (Optional). Saved in `viz` folder.
+- `--chunk_size`: Number of frames to process at once (Default: `60`). Lower this if OOM occurs.
 
 ### Features
 - **Video Mode**: Automatically groups frames by video ID and uses SAM 3's temporal tracker for consistent segmentation.
