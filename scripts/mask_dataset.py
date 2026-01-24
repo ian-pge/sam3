@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     parser.add_argument("--viz", action="store_true", help="Enable visualization of masks on images")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a local model checkpoint")
+    parser.add_argument("--cpu-offload", action="store_true", help="Offload video frames to CPU to save GPU memory")
     args = parser.parse_args()
 
     print("\n🚀 Starting SAM3 Video Masking Pipeline")
@@ -45,7 +46,10 @@ def main():
         return
 
     # Create output directory
-    output_path = os.path.join(dataset_path, args.output_dir)
+    output_path = args.output_dir # Use absolute path if provided, or handle relative
+    if not os.path.isabs(output_path):
+        output_path = os.path.join(dataset_path, args.output_dir)
+        
     os.makedirs(output_path, exist_ok=True)
     
     # Create visualization directory
@@ -53,18 +57,17 @@ def main():
     if args.viz:
         os.makedirs(viz_path, exist_ok=True)
 
-    # Recap
-    print("📋 Configuration Recap:")
-    print(f"  ├── 📂 Dataset Path: {dataset_path}")
-    print(f"  ├── 📂 Output Dir:   {output_path}")
-    print(f"  ├── 👁️  Video Mode:   Enabled ✅")
-    print(f"  ├── 📝 Prompt:       '{args.prompt}'")
-    print(f"  ├── 🎚️  Threshold:    {args.threshold}")
-    if args.checkpoint:
-        print(f"  ├── 💾 Checkpoint:   {args.checkpoint}")
-    print("=" * 50)
+    # 1. Setup
+    print("📦 Loading SAM3 Video model...")
+    # Use all available GPUs
+    gpus_to_use = range(torch.cuda.device_count()) if torch.cuda.is_available() else []
+    
+    predictor = build_sam3_video_predictor(
+        gpus_to_use=gpus_to_use,
+        checkpoint_path=args.checkpoint,
+        offload_video_to_cpu=args.cpu_offload
+    )
 
-    # 1. Group images by video
     print("\n🔍 Scanning and grouping images...")
     image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
     image_files = []
