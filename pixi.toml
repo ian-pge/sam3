@@ -44,6 +44,9 @@ gxx_linux-64 = ">=14.3.0,<15"
 linux = "5.10"
 cuda = "12.4"
 
+[activation.env]
+HF_HOME = "/workspace/.cache/huggingface"
+
 [pypi-dependencies]
 decord = "*"
 fairscale = "*"

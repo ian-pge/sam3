@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--prompt", type=str, default="car", help="Text prompt for segmentation")
     parser.add_argument("--threshold", type=float, default=0.15, help="Confidence threshold for detection")
     parser.add_argument("--viz", action="store_true", help="Enable visualization of masks on images")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to a local model checkpoint")
     args = parser.parse_args()
 
     print("\n🚀 Starting SAM3 Video Masking Pipeline")
@@ -59,6 +60,8 @@ def main():
     print(f"  ├── 👁️  Video Mode:   Enabled ✅")
     print(f"  ├── 📝 Prompt:       '{args.prompt}'")
     print(f"  ├── 🎚️  Threshold:    {args.threshold}")
+    if args.checkpoint:
+        print(f"  ├── 💾 Checkpoint:   {args.checkpoint}")
     print("=" * 50)
 
     # 1. Group images by video
@@ -93,7 +96,7 @@ def main():
     try:
         # Use all available GPUs
         gpus_to_use = range(torch.cuda.device_count()) if torch.cuda.is_available() else []
-        predictor = build_sam3_video_predictor(gpus_to_use=gpus_to_use)
+        predictor = build_sam3_video_predictor(gpus_to_use=gpus_to_use, checkpoint_path=args.checkpoint)
 
         print("  ✅ Model loaded successfully!")
     except Exception as e:
@@ -136,22 +139,69 @@ def main():
                     
                     # 3. Add text prompt to the FIRST frame (frame 0 in temp dir)
                     # We assume the object is present in the first frame.
-                    predictor.handle_request({
+                    prompt_response = predictor.handle_request({
                         "type": "add_prompt",
                         "session_id": session_id,
                         "frame_index": 0,
                         "text": args.prompt
                     })
+
+                    target_obj_id = None # Default to None (keep all if no decision made, or handle accordingly)
+
+                    # 3b. Filter for the largest object (Main Car)
+                    if "outputs" in prompt_response and "out_binary_masks" in prompt_response["outputs"]:
+                        masks = prompt_response["outputs"]["out_binary_masks"] # (N, H, W)
+                        obj_ids = prompt_response["outputs"]["out_obj_ids"]      # (N,)
+                        
+                        if len(obj_ids) > 1:
+                            # Calculate area for each object
+                            areas = [np.sum(mask) for mask in masks]
+                            # Find index of largest area
+                            largest_idx = np.argmax(areas)
+                            target_obj_id = obj_ids[largest_idx]
+                            
+                            print(f"  🔍 Detected {len(obj_ids)} objects:")
+                            for i, obj_id in enumerate(obj_ids):
+                                is_target = "✅ (Main)" if i == largest_idx else "❌ (Ignored)"
+                                print(f"    - ID {obj_id}: Area={areas[i]} {is_target}")
+
+                            print(f"  🎯 Keeping Main Car (ID {target_obj_id}) for OUTPUT (Tracking all internal)")
+                            
+                            # Do NOT remove objects from session to maintain tracking stability
+                        elif len(obj_ids) == 1:
+                            print(f"  🎯 Found 1 object (ID {obj_ids[0]}). Keeping it.")
+                            target_obj_id = obj_ids[0]
+                        else:
+                            print(f"  ⚠️  No objects detected in frame 0.")
                     
                     # 4. Propagate
+                    total_frames = len(frames)
                     output_generator = predictor.handle_stream_request({
                         "type": "propagate_in_video",
-                        "session_id": session_id
+                        "session_id": session_id,
+                        "start_frame_idx": 0,
                     })
-                    
-                    for frame_out in output_generator:
+
+                    # 5. Process propagation results
+                    for frame_out in tqdm(output_generator, desc="propagate_in_video", total=total_frames):
                         temp_frame_idx = frame_out["frame_index"]
                         outputs = frame_out["outputs"]
+
+                         # If we have a target object, filter the output
+                        if target_obj_id is not None:
+                            current_obj_ids = outputs["out_obj_ids"]
+                            if target_obj_id in current_obj_ids:
+                                # Find index of target
+                                # current_obj_ids is a numpy array or list
+                                idx = np.where(current_obj_ids == target_obj_id)[0][0]
+                                
+                                # Filter masks to just this object
+                                outputs["out_binary_masks"] = outputs["out_binary_masks"][idx : idx+1]
+                                # We don't strictly need to update obj_ids/probs for saving, just the mask
+                            else:
+                                # Target lost in this frame
+                                outputs["out_binary_masks"] = np.zeros((0, outputs["out_binary_masks"].shape[1], outputs["out_binary_masks"].shape[2]), dtype=bool)
+
                         
                         original_path = temp_to_original_map[temp_frame_idx]
                         original_filename = os.path.basename(original_path)
