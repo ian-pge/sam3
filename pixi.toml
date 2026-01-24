@@ -52,4 +52,6 @@ decord = "*"
 fairscale = "*"
 timm = ">=1.0.17"
 sympy = "*"
+hf_transfer = "*"
 sam3 = { path = ".", editable = true }
+hf-transfer = ">=0.1.9, <0.2"
