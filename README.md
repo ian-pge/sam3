@@ -20,20 +20,13 @@ pixi run huggingface-cli login
 
 ---
 
-## Car Segmentation Task (Video Mode)
+## Object Segmentation Task (SAM3 Batched)
 
-We provide a specialized task to mask objects (e.g., cars) in a dataset using **SAM 3 Video Mode**. This leverages temporal tracking to ensure consistent masks across sequential video frames.
+This script is highly optimized to segment **Cars** and **Windows** from a dataset. It uses batched processing for maximum speed.
 
-### File Naming Requirement (CRITICAL)
-Your image files **MUST** follow this specific naming convention to be recognized and grouped correctly:
-- `frame_{frame_index}_video_{video_id}.png`
-
-Example:
-- `frame_0_video_1.png`
-- `frame_1_video_1.png`
-- `frame_0_video_2.png` 
-
-Files not matching this pattern will be ignored.
+### Specialized Logic
+- **Car**: Keeps the mask with the **largest surface area**.
+- **Window**: Keeps the **union** of all detected window masks.
 
 ### Command
 ```bash
@@ -41,24 +34,20 @@ pixi run mask-cars <dataset_path> [options]
 ```
 
 ### Arguments
-- `dataset_path`: Path to the directory containing images (Required).
-- `--output_dir`: Subdirectory to save masks (Default: `masks`).
-- `--prompt`: Text prompt for segmentation (Default: `"car"`).
-- `--threshold`: Confidence threshold for detection (Default: `0.15`). Lower this if cars are missed.
-- `--viz`: Enable visualization of crops (cutouts) on real images (Optional). Saved in `viz` folder.
-- `--chunk_size`: Number of frames to process at once (Default: `60`). Lower this if OOM occurs.
+- `dataset_path`: Path to the dataset (searches recursively).
+- `--batch_size`: Number of images to process in parallel (Default: 4). Increase for faster speed if GPU RAM allows.
+- `--output_dir`: Output root directory (Default: `masks`).
+- `--threshold`: Detection confidence (Default: `0.15`).
+- `--viz`: Generate visualizations.
 
 ### Features
-- **Video Mode**: Automatically groups frames by video ID and uses SAM 3's temporal tracker for consistent segmentation.
-- **Progress Bar**: Tracks processed videos and frames.
-- **Visualizations**: Optional (`--viz`). Saves `_cutout.png` showing the isolated object.
-- **Analytics**: Displays a summary of processed videos, total frames, and errors.
+- **Batched Processing**: ~10x faster than single-mode.
+- **Specific Logic**: Handles "Car" and "Window" differently as requested.
+- **Recursive Search**: Automatically finds images in subfolders.
 
 ### Example
 ```bash
-pixi run mask-cars /workspace/datasets/voiture_random/mixed/images --prompt "car"
+pixi run mask-cars /workspace/datasets/voiture_dure --batch_size 4 --viz
 ```
-
-**Note:** The script creates temporary working directories to link sequential frames for the model, maximizing storage efficiency. These are cleaned up automatically.
 
 ---

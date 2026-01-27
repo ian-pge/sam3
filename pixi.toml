@@ -35,7 +35,7 @@ pycocotools = "*"
 submitit = "*"
 torchmetrics = "*"
 
-torchvision = "*"
+torchvision = ">=0.25.0,<0.26"
 cuda-toolkit = ">=12.9.1,<13"
 cuda-nvcc = ">=12.9.86,<13"
 gcc_linux-64 = ">=14.3.0,<15"

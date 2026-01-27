@@ -1,43 +1,22 @@
 import argparse
-import gc
 import glob
 import os
-import re
-import shutil
-import tempfile
 import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-from sam3.model_builder import build_sam3_video_predictor
-
-
-def parse_video_info(filename):
-    basename = os.path.basename(filename)
-    # Regex to match frame_*_video_*.ext
-    match = re.search(r"frame_(\d+)_video_(\d+)", basename)
-    if match:
-        frame_idx = int(match.group(1))
-        video_idx = int(match.group(2))
-        return video_idx, frame_idx, filename
-    return None
-
-
-def compute_iou(mask1, mask2):
-    """Computes Intersection over Union between two binary masks."""
-    intersection = np.logical_and(mask1, mask2).sum()
-    union = np.logical_or(mask1, mask2).sum()
-    if union == 0:
-        return 0.0
-    return intersection / union
-
+from sam3.model_builder import build_sam3_image_model
+from sam3.model.sam3_image_processor import Sam3Processor
+from sam3.model import box_ops
+from sam3.model.data_misc import FindStage
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Mask cars in a dataset using SAM3 Video Mode (Chunked)"
+        description="Mask objects using SAM3 Image Mode (High Performance Batched)"
     )
     parser.add_argument(
         "dataset_path", type=str, help="Path to the dataset directory containing images"
@@ -47,9 +26,6 @@ def main():
         type=str,
         default="masks",
         help="Subdirectory name for saving masks",
-    )
-    parser.add_argument(
-        "--prompt", type=str, default="car", help="Text prompt for segmentation"
     )
     parser.add_argument(
         "--threshold",
@@ -64,264 +40,224 @@ def main():
         "--checkpoint", type=str, default=None, help="Path to a local model checkpoint"
     )
     parser.add_argument(
-        "--cpu-offload",
-        action="store_true",
-        help="Offload video frames to CPU to save GPU memory",
-    )
-    parser.add_argument(
-        "--chunk_size",
-        type=int,
-        default=60,
-        help="Number of frames to process at once (lower this if OOM occurs)",
+        "--batch_size", type=int, default=4, help="Number of images to process at once"
     )
     args = parser.parse_args()
 
-    print(f"🚀 SAM3 Video Masking | Chunk Size: {args.chunk_size}")
+    print(f"🚀 SAM3 Batched Masking | Batch Size: {args.batch_size} | Car: Largest | Window: Union")
 
     dataset_path = args.dataset_path
     if not os.path.exists(dataset_path):
         print(f"❌ Error: Dataset path '{dataset_path}' does not exist.")
         return
 
-    # Create output directory
+    # Create output directories
     output_path = args.output_dir
     if not os.path.isabs(output_path):
         output_path = os.path.join(dataset_path, args.output_dir)
 
-    os.makedirs(output_path, exist_ok=True)
+    car_output_path = os.path.join(output_path, "car")
+    window_output_path = os.path.join(output_path, "window")
+    os.makedirs(car_output_path, exist_ok=True)
+    os.makedirs(window_output_path, exist_ok=True)
 
-    # Create visualization directory
     if args.viz:
-        os.makedirs(os.path.join(output_path, "viz"), exist_ok=True)
+        os.makedirs(os.path.join(car_output_path, "viz"), exist_ok=True)
+        os.makedirs(os.path.join(window_output_path, "viz"), exist_ok=True)
 
-    # 1. Setup
-    print("📦 Loading SAM3 Video model...", end="", flush=True)
+    # 1. Setup Model
+    print("📦 Loading SAM3 Image model...", end="", flush=True)
     try:
-        gpus_to_use = (
-            range(torch.cuda.device_count()) if torch.cuda.is_available() else []
-        )
-        predictor = build_sam3_video_predictor(
-            gpus_to_use=gpus_to_use,
+        model = build_sam3_image_model(
             checkpoint_path=args.checkpoint,
-            offload_video_to_cpu=args.cpu_offload,
         )
+        processor = Sam3Processor(model, confidence_threshold=args.threshold)
         print(" Done!")
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         return
 
-    print("\n🔍 Scanning and grouping images...")
+    # 2. Pre-compute Text Prompts
+    print("🧠 Pre-computing features...", end="", flush=True)
+    try:
+        with torch.inference_mode():
+            car_text_features = model.backbone.forward_text(["car"], device=processor.device)
+            window_text_features = model.backbone.forward_text(["window"], device=processor.device)
+    except Exception as e:
+        print(f"❌ Error encoding text: {e}")
+        return
+    print(" Done!")
+
+    # 3. Find Images
+    print("\n🔍 Scanning images...")
     image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
     image_files = []
+    
+    search_path = dataset_path
+    if os.path.exists(os.path.join(dataset_path, "images")):
+        search_path = os.path.join(dataset_path, "images")
+        print(f"👉 Found 'images' subdirectory, using: {search_path}")
+
+    # Recursive search
     for ext in image_extensions:
-        image_files.extend(glob.glob(os.path.join(dataset_path, ext)))
-        image_files.extend(glob.glob(os.path.join(dataset_path, ext.upper())))
+        image_files.extend(glob.glob(os.path.join(search_path, "**", ext), recursive=True))
+        image_files.extend(glob.glob(os.path.join(search_path, "**", ext.upper()), recursive=True))
+    
+    image_files.sort()
 
-    video_groups = {}  # video_idx -> [(frame_idx, filepath)]
-
-    for img_path in image_files:
-        info = parse_video_info(img_path)
-        if info:
-            vid_idx, frame_idx, path = info
-            if vid_idx not in video_groups:
-                video_groups[vid_idx] = []
-            video_groups[vid_idx].append((frame_idx, path))
-
-    if not video_groups:
-        print(f"❌ No valid video frames found in {dataset_path}")
+    if not image_files:
+        print(f"❌ No valid images found in {search_path}")
         return
 
-    # Sort frames within each video
-    for vid_idx in video_groups:
-        video_groups[vid_idx].sort(key=lambda x: x[0])
+    print(f"🔍 Found {len(image_files)} images. Starting processing...")
 
-    print(f"🔍 Found {len(video_groups)} videos. Starting processing...")
-
-    stats = {"videos_processed": 0, "frames_processed": 0, "errors": 0}
-
+    stats = {"processed": 0, "errors": 0}
     start_time = time.time()
 
-    # Process each video
-    for vid_idx, frames in tqdm(video_groups.items(), desc="Processing Videos 🎥"):
-        # State tracking for continuity between chunks
-        previous_chunk_last_mask = None
+    # Batch Processing Loop
+    for i in tqdm(range(0, len(image_files), args.batch_size), desc="Processing Batches 📦"):
+        batch_paths = image_files[i : i + args.batch_size]
+        current_batch_size = len(batch_paths)
+        
+        try:
+            # Load images
+            images = []
+            for img_path in batch_paths:
+                images.append(Image.open(img_path).convert("RGB"))
+            
+            # Set Image Batch
+            inference_state = processor.set_image_batch(images)
+            
+            # Setup batched prompt input
+            find_stage = FindStage(
+                img_ids=torch.arange(current_batch_size, device=processor.device, dtype=torch.long),
+                text_ids=torch.zeros(current_batch_size, device=processor.device, dtype=torch.long),
+                input_boxes=None, input_boxes_mask=None, input_boxes_label=None,
+                input_points=None, input_points_mask=None
+            )
+            dummy_geometric = model._get_dummy_prompt(num_prompts=current_batch_size)
 
-        # Calculate chunks
-        total_frames = len(frames)
-        chunk_size = args.chunk_size
-        num_chunks = (total_frames + chunk_size - 1) // chunk_size
-
-        for chunk_idx in range(num_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, total_frames)
-            current_chunk_frames = frames[start_idx:end_idx]
-
-            if not current_chunk_frames:
-                continue
-
-            # Force cleanup before every chunk
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            with tempfile.TemporaryDirectory() as temp_video_dir:
-                try:
-                    # 1. Prepare symlinks for this chunk
-                    temp_to_original_map = {}
-
-                    for i, (original_frame_idx, original_path) in enumerate(
-                        current_chunk_frames
-                    ):
-                        ext = os.path.splitext(original_path)[1]
-                        symlink_name = f"{i:05d}{ext}"
-                        symlink_path = os.path.join(temp_video_dir, symlink_name)
-                        os.symlink(original_path, symlink_path)
-                        temp_to_original_map[i] = original_path
-
-                    # 2. Start Session
-                    with torch.inference_mode():
-                        response = predictor.handle_request(
-                            {"type": "start_session", "resource_path": temp_video_dir}
-                        )
-                        session_id = response["session_id"]
-
-                        # 3. Add text prompt to frame 0 of THIS chunk
-                        prompt_response = predictor.handle_request(
-                            {
-                                "type": "add_prompt",
-                                "session_id": session_id,
-                                "frame_index": 0,
-                                "text": args.prompt,
-                            }
-                        )
-
-                        target_obj_id = None
-
-                        if (
-                            "outputs" in prompt_response
-                            and "out_binary_masks" in prompt_response["outputs"]
-                        ):
-                            masks = prompt_response["outputs"]["out_binary_masks"]
-                            obj_ids = prompt_response["outputs"]["out_obj_ids"]
-
-                            if len(obj_ids) > 0:
-                                if chunk_idx == 0:
-                                    # First chunk: Pick largest object
-                                    areas = [np.sum(mask) for mask in masks]
-                                    target_obj_id = obj_ids[np.argmax(areas)]
-                                else:
-                                    # Subsequent chunks: Pick object matching previous mask
-                                    if previous_chunk_last_mask is not None:
-                                        best_iou = -1
-                                        best_id = None
-
-                                        for i, obj_id in enumerate(obj_ids):
-                                            iou = compute_iou(
-                                                masks[i], previous_chunk_last_mask
-                                            )
-                                            if iou > best_iou:
-                                                best_iou = iou
-                                                best_id = obj_id
-
-                                        # If overlap is decent, keep it. Else fallback to largest.
-                                        if best_iou > 0.01:
-                                            target_obj_id = best_id
-                                        else:
-                                            areas = [np.sum(mask) for mask in masks]
-                                            target_obj_id = obj_ids[np.argmax(areas)]
-                                    else:
-                                        # Fallback
-                                        areas = [np.sum(mask) for mask in masks]
-                                        target_obj_id = obj_ids[np.argmax(areas)]
-
-                        # 4. Propagate
-                        output_generator = predictor.handle_stream_request(
-                            {
-                                "type": "propagate_in_video",
-                                "session_id": session_id,
-                                "start_frame_idx": 0,
-                            }
-                        )
-
-                        chunk_last_mask = None
-
-                        # 5. Process results
-                        for frame_out in output_generator:
-                            temp_idx = frame_out["frame_index"]
-                            outputs = frame_out["outputs"]
-
-                            final_mask = None
-
-                            # Filter for the specific object ID
-                            if (
-                                target_obj_id is not None
-                                and target_obj_id in outputs["out_obj_ids"]
-                            ):
-                                idx = np.where(outputs["out_obj_ids"] == target_obj_id)[
-                                    0
-                                ][0]
-                                raw_mask = outputs["out_binary_masks"][idx]
-                                final_mask = raw_mask.astype(np.uint8) * 255
-                                chunk_last_mask = raw_mask  # Save for continuity
-                            else:
-                                shape = outputs["out_binary_masks"].shape
-                                final_mask = np.zeros(
-                                    (shape[1], shape[2]), dtype=np.uint8
-                                )
-                                chunk_last_mask = None
-
-                            # Save Mask
-                            original_path = temp_to_original_map[temp_idx]
-                            save_name = (
-                                os.path.splitext(os.path.basename(original_path))[0]
-                                + "_mask.png"
-                            )
-                            save_full_path = os.path.join(output_path, save_name)
-                            Image.fromarray(final_mask).save(save_full_path)
-
-                            # Save Viz (Optional)
-                            if args.viz:
-                                # Save as cutout with transparency
-                                viz_name = (
-                                    os.path.splitext(os.path.basename(original_path))[0]
-                                    + "_cutout.png"
-                                )
-                                viz_full_path = os.path.join(
-                                    output_path, "viz", viz_name
-                                )
-                                img = Image.open(original_path).convert("RGBA")
-                                mask_img = Image.fromarray(final_mask).convert("L")
-                                img.putalpha(mask_img)
-                                img.save(viz_full_path)
-
-                            stats["frames_processed"] += 1
-
-                        # Store mask for next chunk
-                        previous_chunk_last_mask = chunk_last_mask
-
-                        # 5. Close session immediately to free VRAM
-                        predictor.handle_request(
-                            {"type": "close_session", "session_id": session_id}
-                        )
-
-                except Exception as e:
-                    stats["errors"] += 1
-                    print(
-                        f"  ❌ Error processing video {vid_idx} (chunk {chunk_idx}): {e}"
+            # --- Define Helper for Decoding ---
+            def run_batch_inference(features_update):
+                with torch.inference_mode():
+                    # Update features
+                    inference_state["backbone_out"].update(features_update)
+                    
+                    # Forward
+                    outputs = model.forward_grounding(
+                        backbone_out=inference_state["backbone_out"],
+                        find_input=find_stage,
+                        geometric_prompt=dummy_geometric,
+                        find_target=None
                     )
-                    break  # Skip rest of this video on error
+                    
+                    out_logits = outputs["pred_logits"] # [B, N, 1]
+                    out_masks = outputs["pred_masks"]   # [B, N, H, W] (low res)
+                    
+                    # Probabilities
+                    out_probs = out_logits.sigmoid()
+                    presence_score = outputs["presence_logit_dec"].sigmoid().unsqueeze(1)
+                    out_probs = (out_probs * presence_score).squeeze(-1) # [B, N]
+                    
+                    return out_masks, out_probs
 
-        stats["videos_processed"] += 1
+            # === CAR PASS ===
+            car_masks_lowres, car_probs = run_batch_inference(car_text_features)
+            
+            # === WINDOW PASS ===
+            window_masks_lowres, window_probs = run_batch_inference(window_text_features)
 
-    end_time = time.time()
-    total_duration = end_time - start_time
+            # === Post-Processing per Image ===
+            for b_idx in range(current_batch_size):
+                img_path = batch_paths[b_idx]
+                w, h = images[b_idx].size
+                
+                # Interpolate function
+                def get_hires_masks(lowres_masks):
+                    # lowres_masks: [N, H_small, W_small]
+                    # Resize to [N, h, w]
+                    if lowres_masks.numel() == 0: return lowres_masks
+                    masks = F.interpolate(
+                        lowres_masks.unsqueeze(0), # [1, N, H, W]
+                        size=(1008, 1008), # Model resolution
+                        mode="bilinear", 
+                        align_corners=False
+                    ).squeeze(0)
+                    
+                    # Crop/Resize to original image aspect if needed? 
+                    # Processor usually resizes 1008x1008 back to original.
+                    # Simple resize to (h, w)
+                    masks = F.interpolate(
+                        masks.unsqueeze(0),
+                        size=(h, w),
+                        mode="bilinear",
+                        align_corners=False
+                    ).squeeze(0)
+                    return masks.sigmoid()
 
-    print("\n" + "=" * 30)
-    print(
-        f"🏁 Done! {stats['frames_processed']} frames from {len(video_groups)} videos in {total_duration:.1f}s. Errors: {stats['errors']}"
-    )
-    print("=" * 30)
+                # -- CAR (Largest) --
+                c_probs = car_probs[b_idx] # [N]
+                c_masks = car_masks_lowres[b_idx] # [N, h, w]
+                
+                keep = c_probs > args.threshold
+                if keep.any():
+                    valid_masks = c_masks[keep]
+                    # Get High Res
+                    hires = get_hires_masks(valid_masks)
+                    binary = (hires > 0.5)
+                    # Largest
+                    areas = binary.float().sum(dim=(1,2))
+                    largest = torch.argmax(areas)
+                    final_car = (binary[largest].float().cpu().numpy() * 255).astype(np.uint8)
+                else:
+                    final_car = np.zeros((h, w), dtype=np.uint8)
 
+                # -- WINDOW (Union) --
+                w_probs = window_probs[b_idx]
+                w_masks = window_masks_lowres[b_idx]
+                
+                keep = w_probs > args.threshold
+                if keep.any():
+                    valid_masks = w_masks[keep]
+                    hires = get_hires_masks(valid_masks)
+                    binary = (hires > 0.5)
+                    # Union
+                    union = torch.any(binary, dim=0)
+                    final_window = (union.float().cpu().numpy() * 255).astype(np.uint8)
+                else:
+                    final_window = np.zeros((h, w), dtype=np.uint8) # Or Car mask?
+
+                # Save
+                base_name = os.path.splitext(os.path.basename(img_path))[0] + ".png"
+                Image.fromarray(final_car).save(os.path.join(car_output_path, base_name))
+                Image.fromarray(final_window).save(os.path.join(window_output_path, base_name))
+
+                # Viz
+                if args.viz:
+                    image_viz = images[b_idx].copy().convert("RGBA")
+                    viz_name = os.path.splitext(os.path.basename(img_path))[0] + "_cutout.png"
+                    
+                    # Car
+                    img_car = image_viz.copy()
+                    img_car.putalpha(Image.fromarray(final_car).convert("L"))
+                    img_car.save(os.path.join(car_output_path, "viz", viz_name))
+                    
+                    # Window
+                    img_win = image_viz.copy()
+                    img_win.putalpha(Image.fromarray(final_window).convert("L"))
+                    img_win.save(os.path.join(window_output_path, "viz", viz_name))
+
+            stats["processed"] += current_batch_size
+
+        except Exception as e:
+            stats["errors"] += 1
+            print(f"  ❌ Error processing batch starting {os.path.basename(batch_paths[0])}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    total_duration = time.time() - start_time
+    print(f"\n🏁 Finished {stats['processed']} images in {total_duration:.1f}s")
 
 if __name__ == "__main__":
     main()
